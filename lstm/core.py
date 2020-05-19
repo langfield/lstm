@@ -12,7 +12,6 @@ SEQ_LEN = symbols.SEQ_LEN
 INPUT_SIZE = symbols.INPUT_SIZE
 NUM_LAYERS = symbols.NUM_LAYERS
 HIDDEN_SIZE = symbols.HIDDEN_SIZE
-NUM_DIRECTIONS = symbols.NUM_DIRECTIONS
 
 # pylint: disable=too-few-public-methods, invalid-name
 
@@ -65,6 +64,7 @@ class LSTMBiases:
         self.o = shift_initialization_range(self.o, init_width)
 
 
+@typechecked
 class LSTMLayer:
     """ An implementation of an LSTM layer in numpy. """
 
@@ -75,11 +75,7 @@ class LSTMLayer:
         layer: int,
         bias: bool = False,
         dropout: float = 0,
-        bidirectional: bool = False,
     ):
-        # Set number of directions.
-        self.num_directions = 2 if bidirectional else 1
-
         self.hidden_size = hidden_size
 
         # Compute initialization width (centered around zero).
@@ -91,7 +87,7 @@ class LSTMLayer:
             self.w_i = LSTMWeights(hidden_size, input_size, init_width)
         else:
             self.w_i = LSTMWeights(
-                hidden_size, self.num_directions * hidden_size, init_width
+                hidden_size, hidden_size, init_width
             )
 
         # Hidden-hidden weights.
@@ -104,48 +100,52 @@ class LSTMLayer:
         self.b_h = LSTMBiases(hidden_size, init_width)
 
         # Declarations for hidden and cell states.
-        self.h: Array[float, NUM_DIRECTIONS, BATCH, HIDDEN_SIZE]
-        self.c: Array[float, NUM_DIRECTIONS, BATCH, HIDDEN_SIZE]
+        self.h: Array[float, BATCH, HIDDEN_SIZE]
+        self.c: Array[float, BATCH, HIDDEN_SIZE]
 
     def __call__(
         self,
         x: Array[float, SEQ_LEN, BATCH, INPUT_SIZE],
         initial_states: Optional[
             Tuple[
-                Array[float, NUM_DIRECTIONS, BATCH, HIDDEN_SIZE],
-                Array[float, NUM_DIRECTIONS, BATCH, HIDDEN_SIZE],
+                Array[float, BATCH, HIDDEN_SIZE],
+                Array[float, BATCH, HIDDEN_SIZE],
             ]
         ] = None,
     ) -> Tuple[
-        Array[float, SEQ_LEN, BATCH, INPUT_SIZE],
+        Array[float, SEQ_LEN, BATCH, HIDDEN_SIZE],
         Tuple[
-            Array[float, NUM_DIRECTIONS, BATCH, HIDDEN_SIZE],
-            Array[float, NUM_DIRECTIONS, BATCH, HIDDEN_SIZE],
+            Array[float, BATCH, HIDDEN_SIZE],
+            Array[float, BATCH, HIDDEN_SIZE],
         ],
     ]:
         seq_len, batch, input_size = x.shape
         if initial_states:
             self.h, self.c = initial_states[0], initial_states[1]
         else:
-            self.h = np.zeros((self.num_directions, batch, self.hidden_size))
-            self.c = np.zeros((self.num_directions, batch, self.hidden_size))
+            self.h = np.zeros((batch, self.hidden_size))
+            self.c = np.zeros((batch, self.hidden_size))
+
+        # The output features ``h_t`` for each ``t``.
+        outs = np.zeros((seq_len, batch, self.hidden_size))
 
         x = x.reshape(batch, seq_len, input_size)
         for b, batch in enumerate(x):
-            for x_t in batch:
-                self.h[0][b], self.c[0][b] = self._forward(
+            for t, x_t in enumerate(batch):
+                self.h[b], self.c[b] = self._forward(
                     x_t,
-                    self.h[0][b],
-                    self.c[0][b],
+                    self.h[b],
+                    self.c[b],
                     self.w_i,
                     self.b_i,
                     self.w_h,
                     self.b_h,
                 )
-        return self.h[0]
+                outs[t][b] = self.h[b]
+
+        return outs, (self.h, self.c)
 
     @staticmethod
-    @typechecked
     def _gate(
         w_i: Array[float, HIDDEN_SIZE, X],
         x_t: Array[float, X],
